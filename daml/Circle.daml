@@ -161,6 +161,9 @@ template AmendmentAgreement
             RatifyAmendment : ContractId Amendment
                 do 
                     thisRevision <- fetch revision
+                    thisRevisionResults <- fetch thisRevision.results
+
+                    assertMsg "Revision doesn't have the required votes" (length thisRevisionResults.supportVotes > length thisRevisionResults.rejectVotes)
                     thisCircle <- fetch thisRevision.circle
                     amendmentId <- create Amendment with 
                         writer
@@ -172,6 +175,8 @@ template AmendmentAgreement
                         with
                             validatingParty = validator
                             amendment = amendmentId
+                    
+                    -- archive this.revision
 
                     return amendmentId
 
