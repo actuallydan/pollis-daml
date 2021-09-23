@@ -1,0 +1,225 @@
+module Circle where
+
+import DA.List
+import DA.Optional
+
+template RevisionResults
+    with
+        supportVotes: [Vote]
+        rejectVotes:[Vote]
+        writer: Party
+        validators: [Party]
+    where
+        signatory writer
+        observer validators
+        
+        choice CastVote: ContractId RevisionResults
+            with
+                voter: Party
+                support: Bool
+            controller voter 
+                do
+                    let oldSupport = this.supportVotes
+                    let oldReject = this.rejectVotes;
+
+                    let supportedIndex = findIndex (\cI -> (cI.voter == voter)) oldSupport
+                    let rejectedIndex = findIndex (\cI -> (cI.voter == voter)) oldReject
+                    let hasVotedSupport : Bool = isSome (supportedIndex)
+                    let hasVotedReject : Bool = isSome (rejectedIndex)
+
+                    -- if the user is casting the same vote as before, don't let them, they can only update their vote
+                    assertMsg "has already voted" (not ((hasVotedSupport && support) || (hasVotedReject && not support)))
+
+                    -- create the new vote
+                    voteId <- create Vote 
+                        with voter; support = support
+
+                    thisVote <- fetch voteId
+
+                    -- if the user is just switching their vote
+                    if hasVotedSupport && not support
+                        then do
+                            let actualIndex = fromSome supportedIndex
+                            let newSupportVotes = delete (oldSupport !! actualIndex) oldSupport
+                            let newRejectVotes = thisVote :: this.rejectVotes
+                            create this with 
+                                supportVotes = newSupportVotes
+                                rejectVotes = newRejectVotes
+
+                    else if hasVotedReject && support
+                        then do
+                            let actualIndex = fromSome rejectedIndex
+                            let newRejectVotes = delete (oldReject !! actualIndex) oldReject
+                            let newSupportVotes = thisVote :: this.supportVotes
+                            create this with 
+                                supportVotes = newSupportVotes
+                                rejectVotes = newRejectVotes
+
+                    -- if the user hasn't yet cast a vote
+                    else if support
+                        then do
+                            let newSupportVotes = thisVote :: this.supportVotes
+                            let newRejectVotes = this.rejectVotes
+                            create this with 
+                                supportVotes = newSupportVotes
+                                rejectVotes = newRejectVotes
+
+                    else do
+                        let newSupportVotes = this.supportVotes
+                        let newRejectVotes = thisVote :: this.rejectVotes
+                        create this with 
+                            supportVotes = newSupportVotes
+                            rejectVotes = newRejectVotes
+                  
+template Vote
+    with
+        voter: Party
+        support: Bool
+        -- createdAt
+        -- expires
+        -- threshold
+    where
+        signatory voter
+        
+        controller voter can
+            UpdateVoteSupport: ContractId Vote
+                with
+                    newSupport: Bool
+                do create this
+                    with support = newSupport
+
+template Amendment 
+    with
+        writer: Party
+        text: Text
+        circle: ContractId Circle
+        validator: Party
+    where
+        signatory writer
+
+template Revision
+    with
+        writer: Party
+        validators: [Party]
+        newText: Text
+        circle: ContractId Circle
+        results: ContractId RevisionResults
+    where
+        signatory writer
+        observer validators
+
+        nonconsuming choice CreateAmendmentProposal : ContractId AmendmentProposal
+            with 
+                proposer: Party
+            controller proposer
+                do 
+                    create AmendmentProposal
+                        with writer; validators; revision = self; proposer
+        
+        choice CreateVote: ContractId Revision
+            with 
+                voter: Party
+                doesSupport: Bool
+            controller voter
+                do
+                    -- thisRevision <- fetch self
+                  
+                    newRevisionResultsId <- exercise this.results CastVote
+                        with voter; support = doesSupport
+
+                    create this with 
+                        results = newRevisionResultsId 
+
+-- create request to make amendment
+template AmendmentProposal
+    with
+        revision: ContractId Revision
+        writer: Party
+        validators: [Party]
+        proposer: Party
+    where
+        signatory writer
+        observer validators
+
+        nonconsuming choice AcceptAmendmentProposal: ContractId AmendmentAgreement
+            with 
+                validatingParty: Party
+            controller validatingParty
+                do create AmendmentAgreement with writer; validator = validatingParty; revision
+        
+
+-- accept option to make amendment
+template AmendmentAgreement
+    with
+        writer: Party
+        validator: Party
+        revision: ContractId Revision
+    where
+        signatory writer, validator
+
+        controller validator can
+            RatifyAmendment : ContractId Amendment
+                do 
+                    thisRevision <- fetch revision
+                    thisCircle <- fetch thisRevision.circle
+                    amendmentId <- create Amendment with 
+                        writer
+                        validator
+                        text = thisRevision.newText
+                        circle = thisRevision.circle
+
+                    exercise thisRevision.circle UpdateAmendments
+                        with
+                            validatingParty = validator
+                            amendment = amendmentId
+
+                    return amendmentId
+
+type CircleKey = (Text, Party)
+template Circle
+    with
+        name: Text
+        members: [Party]
+        founder: Party
+        amendments: [ContractId Amendment]
+    where
+        signatory founder
+        observer members
+
+        key (name, founder): CircleKey
+        maintainer key._2
+        
+        nonconsuming choice CreateRevision: ContractId Revision
+            with 
+                draftingMember: Party
+                text: Text
+            controller draftingMember
+            do 
+                assertMsg "is not a member" $ draftingMember `elem` members
+                voteId <- create Vote with
+                    voter = draftingMember
+                    support = True
+
+                thisVote <- fetch voteId
+                resultsId <- create RevisionResults with
+                    writer = draftingMember
+                    supportVotes = [thisVote]
+                    rejectVotes = []
+                    validators = this.members
+                create Revision
+                    with 
+                        writer = draftingMember
+                        validators = members
+                        circle = self
+                        newText = text
+                        results = resultsId
+
+        choice UpdateAmendments: ContractId Circle
+            with
+                validatingParty: Party
+                amendment: ContractId Amendment
+            controller validatingParty
+            do
+                assertMsg "is not a member" $ validatingParty `elem` members
+                assertMsg "amendment already exists" $ amendment `notElem` amendments
+                create this with amendments = amendment :: amendments

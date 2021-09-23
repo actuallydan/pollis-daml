@@ -1,0 +1,60 @@
+module Main where
+
+import Daml.Script
+import Circle
+
+circle_test : Script (ContractId Amendment)
+circle_test = script do
+    urkel <- allocateParty "Urkel"
+    fezziwig <- allocateParty "Fezziwig"
+    pond <- allocateParty "Pond"
+
+    -- Urkel Creates a Circle
+    circleId <- submit urkel do
+        createCmd Circle with 
+          founder = urkel
+          name = "MyCircle"
+          members = [urkel, fezziwig, pond]
+          amendments = []
+
+    -- Urkel creates a Revision to be voted on, and casts a vote
+    revisionId <- submit urkel do
+        exerciseCmd circleId CreateRevision with 
+            draftingMember = urkel
+            text = "My new amendment"
+
+    -- users vote, urkel can't create another vote since she already voted 
+    submitMustFail urkel do
+      exerciseCmd revisionId CreateVote
+        with voter = urkel; doesSupport = True
+    
+    -- urkel CAN change her vote 
+    revisionId <- submit urkel do
+      exerciseCmd revisionId CreateVote
+        with voter = urkel; doesSupport = False
+
+    -- as many times as she likes
+    revisionId <- submit urkel do
+      exerciseCmd revisionId CreateVote
+        with voter = urkel; doesSupport = True
+
+    revisionId <- submit fezziwig do
+      exerciseCmd revisionId CreateVote
+        with voter = fezziwig; doesSupport = True
+
+    revisionId <- submit pond do
+      exerciseCmd revisionId CreateVote
+        with voter = pond; doesSupport = False
+
+    -- Urkel wants to ratify the Revision to make it an amendment
+    amendmentProposalId <- submit urkel do
+      exerciseCmd revisionId CreateAmendmentProposal with
+          proposer = urkel
+
+    -- Fezziwig sees the proposal and agrees to ratify it
+    amendmentAgreementId <- submit fezziwig do
+      exerciseCmd amendmentProposalId AcceptAmendmentProposal with validatingParty = fezziwig
+
+    -- Fezziwig attempts to certify the amendment proposal
+    submit fezziwig do
+      exerciseCmd amendmentAgreementId RatifyAmendment
