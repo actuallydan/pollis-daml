@@ -5,8 +5,8 @@ import DA.Optional
 
 template RevisionResults
     with
-        supportVotes: [Vote]
-        rejectVotes:[Vote]
+        supportVotes: [VoteWithId]
+        rejectVotes:[VoteWithId]
         writer: Party
         validators: [Party]
     where
@@ -22,8 +22,8 @@ template RevisionResults
                     let oldSupport = this.supportVotes
                     let oldReject = this.rejectVotes;
 
-                    let supportedIndex = findIndex (\cI -> (cI.voter == voter)) oldSupport
-                    let rejectedIndex = findIndex (\cI -> (cI.voter == voter)) oldReject
+                    let supportedIndex = findIndex (\cI -> (cI._1.voter == voter)) oldSupport
+                    let rejectedIndex = findIndex (\cI -> (cI._1.voter == voter)) oldReject
                     let hasVotedSupport : Bool = isSome (supportedIndex)
                     let hasVotedReject : Bool = isSome (rejectedIndex)
 
@@ -40,8 +40,10 @@ template RevisionResults
                     if hasVotedSupport && not support
                         then do
                             let actualIndex = fromSome supportedIndex
-                            let newSupportVotes = delete (oldSupport !! actualIndex) oldSupport
-                            let newRejectVotes = thisVote :: this.rejectVotes
+                            let voteToReplace = (this.supportVotes !! actualIndex)
+                            let newSupportVotes = delete (this.supportVotes !! actualIndex) this.supportVotes
+                            let newRejectVotes = (thisVote, voteId) :: this.rejectVotes
+                            archive voteToReplace._2
                             create this with 
                                 supportVotes = newSupportVotes
                                 rejectVotes = newRejectVotes
@@ -49,8 +51,10 @@ template RevisionResults
                     else if hasVotedReject && support
                         then do
                             let actualIndex = fromSome rejectedIndex
-                            let newRejectVotes = delete (oldReject !! actualIndex) oldReject
-                            let newSupportVotes = thisVote :: this.supportVotes
+                            let voteToReplace = (this.rejectVotes !! actualIndex)
+                            let newRejectVotes = delete (this.rejectVotes !! actualIndex) this.rejectVotes
+                            let newSupportVotes = (thisVote, voteId) :: this.supportVotes
+                            archive voteToReplace._2
                             create this with 
                                 supportVotes = newSupportVotes
                                 rejectVotes = newRejectVotes
@@ -58,7 +62,7 @@ template RevisionResults
                     -- if the user hasn't yet cast a vote
                     else if support
                         then do
-                            let newSupportVotes = thisVote :: this.supportVotes
+                            let newSupportVotes = (thisVote, voteId) :: this.supportVotes
                             let newRejectVotes = this.rejectVotes
                             create this with 
                                 supportVotes = newSupportVotes
@@ -66,11 +70,11 @@ template RevisionResults
 
                     else do
                         let newSupportVotes = this.supportVotes
-                        let newRejectVotes = thisVote :: this.rejectVotes
+                        let newRejectVotes = (thisVote, voteId) :: this.rejectVotes
                         create this with 
                             supportVotes = newSupportVotes
                             rejectVotes = newRejectVotes
-                  
+
 template Vote
     with
         voter: Party
@@ -129,6 +133,8 @@ template Revision
 
                     create this with 
                         results = newRevisionResultsId 
+
+type VoteWithId = (Vote, ContractId Vote)
 
 -- create request to make amendment
 template AmendmentProposal
@@ -208,7 +214,7 @@ template Circle
                 thisVote <- fetch voteId
                 resultsId <- create RevisionResults with
                     writer = draftingMember
-                    supportVotes = [thisVote]
+                    supportVotes = [(thisVote, voteId)]
                     rejectVotes = []
                     validators = this.members
                 create Revision
